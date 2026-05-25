@@ -56,6 +56,25 @@ docker tag llm-tier-router:v1.0.0 localhost:5000/llm-tier-router:1.0.0
 docker push localhost:5000/llm-tier-router:1.0.0
 ```
 
+### 一键构建并推送
+
+```bash
+bash build-and-push.sh
+```
+
+### 镜像地址
+
+| 环境 | 镜像地址 |
+|------|---------|
+| 本地开发 | `oci://localhost:5000/llm-tier-router:1.0.0` |
+| 集群内部 | `oci://registry.higress-system.svc.cluster.local:5000/llm-tier-router:1.0.0` |
+| Docker Compose | `oci://host.docker.internal:5000/llm-tier-router:1.0.0` |
+
+**Higress 插件配置中的镜像地址：**
+```yaml
+url: oci://host.docker.internal:5000/llm-tier-router:1.0.0
+```
+
 ## 部署验证
 
 ### 1. 检查插件加载状态

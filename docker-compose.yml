@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  registry:
+    image: registry:2
+    container_name: registry
+    ports:
+      - "5000:5000"
+    networks:
+      - higress-network
+    volumes:
+      - registry-data:/var/lib/registry
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - higress-network
+    volumes:
+      - redis-data:/data
+    restart: always
+
+  higress-ai:
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/all-in-one:latest
+    container_name: higress-ai
+    ports:
+      - "8002:8080"
+      - "8001:8001"
+    networks:
+      - higress-network
+    depends_on:
+      - redis
+      - registry
+    restart: always
+
+networks:
+  higress-network:
+    name: higress-network
+
+volumes:
+  registry-data:
+  redis-data:
