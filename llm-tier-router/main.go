@@ -42,7 +42,6 @@ type Config struct {
 	RedisService string              `json:"redis_service"`
 	RedisPort    int                 `json:"redis_port"`
 	RedisPass    string              `json:"redis_pass"`
-	InternalKey  string              `json:"internal_key"`
 	Tiers        []Tier              `json:"tiers"`
 	RedisClient  wrapper.RedisClient `json:"-"`
 }
@@ -63,9 +62,6 @@ func parseConfig(raw gjson.Result, config *Config) error {
 	}
 	if config.RedisPort <= 0 {
 		config.RedisPort = 6379
-	}
-	if config.InternalKey == "" {
-		return errors.New("internal_key is required")
 	}
 	if len(config.Tiers) == 0 {
 		return errors.New("tiers is required")
