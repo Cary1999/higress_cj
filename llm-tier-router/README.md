@@ -75,7 +75,7 @@ bash build-and-push.sh
 url: oci://host.docker.internal:5000/llm-tier-router:1.0.0
 ```
 
-## 部署验证
+## 部署&验证
 
 ### 1. 检查插件加载状态
 
@@ -92,7 +92,111 @@ info    wasm    fetching image llm-tier-router from registry host.docker.interna
 info    wasm    fetching image with plain text from host.docker.internal:5000/llm-tier-router:1.0.0
 ```
 
-### 2. 测试请求
+### 2. 配置说明
+
+#### 配置示例
+
+```yaml
+internal_key: "higress-2026-newapi-secret"
+redis_port: 80
+redis_service: "redis.static"
+tiers:
+  - max_token: 1000
+    target_provider: "zhipu"
+    target_model: "glm-4.5-air"
+  - max_token: 9999999
+    target_provider: "xiaomi"
+    target_model: "mimo-v2.5-pro"
+```
+
+#### 字段说明
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| internal_key | string | 是 | 内部鉴权密钥 |
+| redis_service | string | 是 | Redis 服务名称。Docker `all-in-one` 场景下应填写 Higress 服务来源生成的内部服务名，例如 `redis.static` |
+| redis_port | int | 否 | Redis 服务端口。Docker `all-in-one` 场景下应填写 `80`，而不是 Redis 容器实际监听的 `6379` |
+| redis_pass | string | 否 | Redis 密码 |
+| tiers | array | 是 | 分层配置 |
+| tiers[].max_token | int | 是 | Token 上限 |
+| tiers[].target_provider | string | 是 | 目标 provider 标识。建议使用稳定值，如 `zhipu`、`xiaomi` |
+| tiers[].target_model | string | 是 | 目标模型 |
+
+#### Docker `all-in-one` 部署的 Redis 注意事项
+
+本插件在 Docker 版 `higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/all-in-one` 中使用 Redis 时，需要先在 Higress Console 中创建 Redis 服务来源，然后把插件配置指向 Higress 生成的内部服务名。
+
+![alt text](image/image-3.png)
+
+推荐按官方 AI Token 管理文档中的方式配置 Redis 服务来源：
+
+- 类型：`固定地址`
+- 名称：`redis`
+- 服务端口：`80`
+- 服务地址：`<redis-ip>:6379`
+- 服务协议：`HTTP`
+
+例如 Redis 容器地址为 `172.20.0.2` 时，服务来源应填写为：
+
+```text
+类型: 固定地址
+名称: redis
+服务端口: 80
+服务地址: 172.20.0.2:6379
+服务协议: HTTP
+查询redis ip指令（仅供参考）: docker inspect redis --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'
+```
+![alt text](image/image-4.png)
+
+创建成功后，插件中应配置：
+
+```yaml
+redis_service: "redis.static"
+redis_port: 80
+```
+
+不要直接写成下面这种 K8s/容器名思路的配置：
+
+```yaml
+redis_service: "redis"
+redis_port: 6379
+```
+
+因为在 Docker `all-in-one` 场景下，Wasm 插件访问的是 Higress 服务来源生成的内部服务，而不是直接访问 Docker Compose 容器名。
+
+#### AI 路由配置注意事项
+
+客户端请求固定走 `/v1/chat/completions`。当前方案由插件在网关内补齐目标模型，并写入 provider 路由 Header：
+
+![alt text](image/image-1.png)
+
+以下拿小米与智普举例：
+- `X-Tier-Provider: zhipu`
+- `X-Tier-Provider: xiaomi`
+
+因此，Higress Console 中不要再使用“一条 AI 路由下挂多个 provider 按权重分流”的配置方式，而应拆成两条 AI 路由：
+
+1. 路由 A
+   - Path：`/v1`
+   - Header 匹配：`X-Tier-Provider = zhipu`
+   - 目标 AI 服务：仅 `智普`
+   - 请求比例：`100`
+2. 路由 B
+   - Path：`/v1`
+   - Header 匹配：`X-Tier-Provider = xiaomi`
+   - 目标 AI 服务：仅 `小米`
+   - 请求比例：`100`
+
+![alt text](image/image-2.png)
+
+注意：
+
+- 每条 AI 路由只绑定一个 provider，避免继续发生 90/10 这类随机分流。
+- provider 的地址、密钥、鉴权方式都继续在 Higress 的“AI 服务提供者”中维护，不再写入插件配置。
+- 插件会自动把请求体补成目标模型，因此客户端请求无需携带 `model` 字段。
+
+
+### 3. 测试请求
 
 #### 测试1：缺少 Authorization Header（预期返回 403）
 
@@ -122,105 +226,13 @@ curl -v http://localhost:8081/v1/chat/completions \
   -d '{"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hello"}]}'
 ```
 
-### 3. 验证 Redis 统计
+### 4. 验证 Redis 统计
 
 检查 Redis 中的 Token 统计：
 
 ```bash
 redis-cli GET "higress:llm:token:$(date +%Y%m%d):user123"
 ```
-
-## 配置说明
-
-### 配置示例
-
-```yaml
-internal_key: "higress-2026-newapi-secret"
-redis_port: 80
-redis_service: "redis.static"
-tiers:
-  - max_token: 1000
-    target_provider: "zhipu"
-    target_model: "glm-4.5-air"
-  - max_token: 9999999
-    target_provider: "xiaomi"
-    target_model: "mimo-v2.5-pro"
-```
-
-### 字段说明
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| internal_key | string | 是 | 内部鉴权密钥 |
-| redis_service | string | 是 | Redis 服务名称。Docker `all-in-one` 场景下应填写 Higress 服务来源生成的内部服务名，例如 `redis.static` |
-| redis_port | int | 否 | Redis 服务端口。Docker `all-in-one` 场景下应填写 `80`，而不是 Redis 容器实际监听的 `6379` |
-| redis_pass | string | 否 | Redis 密码 |
-| tiers | array | 是 | 分层配置 |
-| tiers[].max_token | int | 是 | Token 上限 |
-| tiers[].target_provider | string | 是 | 目标 provider 标识。建议使用稳定值，如 `zhipu`、`xiaomi` |
-| tiers[].target_model | string | 是 | 目标模型 |
-
-### Docker `all-in-one` 部署的 Redis 注意事项
-
-本插件在 Docker 版 `higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/all-in-one` 中使用 Redis 时，需要先在 Higress Console 中创建 Redis 服务来源，然后把插件配置指向 Higress 生成的内部服务名。
-
-推荐按官方 AI Token 管理文档中的方式配置 Redis 服务来源：
-
-- 类型：`固定地址`
-- 名称：`redis`
-- 服务端口：`80`
-- 服务地址：`<redis-ip>:6379`
-- 服务协议：`HTTP`
-
-例如 Redis 容器地址为 `172.20.0.2` 时，服务来源应填写为：
-
-```text
-类型: 固定地址
-名称: redis
-服务端口: 80
-服务地址: 172.20.0.2:6379
-服务协议: HTTP
-```
-
-创建成功后，插件中应配置：
-
-```yaml
-redis_service: "redis.static"
-redis_port: 80
-```
-
-不要直接写成下面这种 K8s/容器名思路的配置：
-
-```yaml
-redis_service: "redis"
-redis_port: 6379
-```
-
-因为在 Docker `all-in-one` 场景下，Wasm 插件访问的是 Higress 服务来源生成的内部服务，而不是直接访问 Docker Compose 容器名。
-
-### Higress AI 路由配置建议
-
-客户端固定调用 `/v1/chat/completions`，无需自己传 `model`。插件会根据 tier 自动补齐目标模型，并通过 Header 告诉 Higress 该命中哪个 provider。
-
-推荐在 Higress Console 中拆成两条 AI 路由，而不是在一条路由中配置多个 provider 权重分流：
-
-1. 路由 A
-   - Path：`/v1`
-   - Header 匹配：`X-Tier-Provider = zhipu`
-   - 目标 AI 服务：仅 `智普`
-   - 请求比例：`100`
-2. 路由 B
-   - Path：`/v1`
-   - Header 匹配：`X-Tier-Provider = xiaomi`
-   - 目标 AI 服务：仅 `小米`
-   - 请求比例：`100`
-
-不要再使用如下配置：
-
-- 一条 AI 路由下同时挂 `智普`、`小米`
-- 使用 `90/10`、`50/50` 等权重做分流
-
-因为这会导致插件虽然已经选中了 tier 并改写了模型，但实际 provider 仍然随机命中。
 
 ## 插件工作流程
 

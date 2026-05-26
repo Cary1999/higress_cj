@@ -106,33 +106,6 @@ Client → sub2api → Higress(自定义插件) → LLM Service
 3. **流量分发**：Higress 根据插件写入的路由 Header 将请求转发到对应 AI 服务提供者
 4. **响应返回**：将 LLM 服务的响应返回给客户端
 
-### AI 路由配置注意事项
-
-客户端请求固定走 `/v1/chat/completions`。当前方案由插件在网关内补齐目标模型，并写入 provider 路由 Header：
-
-以下拿小米与智普举例：
-- `X-Tier-Provider: zhipu`
-- `X-Tier-Provider: xiaomi`
-
-因此，Higress Console 中不要再使用“一条 AI 路由下挂多个 provider 按权重分流”的配置方式，而应拆成两条 AI 路由：
-
-1. 路由 A
-   - Path：`/v1`
-   - Header 匹配：`X-Tier-Provider = zhipu`
-   - 目标 AI 服务：仅 `智普`
-   - 请求比例：`100`
-2. 路由 B
-   - Path：`/v1`
-   - Header 匹配：`X-Tier-Provider = xiaomi`
-   - 目标 AI 服务：仅 `小米`
-   - 请求比例：`100`
-
-注意：
-
-- 每条 AI 路由只绑定一个 provider，避免继续发生 90/10 这类随机分流。
-- provider 的地址、密钥、鉴权方式都继续在 Higress 的“AI 服务提供者”中维护，不再写入插件配置。
-- 插件会自动把请求体补成目标模型，因此客户端请求无需携带 `model` 字段。
-
 ## 故障排查
 
 ### 插件无法加载
