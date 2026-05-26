@@ -94,8 +94,16 @@ info    wasm    fetching image with plain text from host.docker.internal:5000/ll
 
 ### 2. 配置说明
 
-#### 配置示例
+#### 配置示例与流程
 
+配置流程:
+![alt text](image/image-5.png)
+
+![alt text](image/image-6.png)
+
+![alt text](image/image-7.png)
+
+配置示例:
 ```yaml
 internal_key: "higress-2026-newapi-secret"
 redis_port: 80
@@ -163,6 +171,13 @@ redis_port: 6379
 ```
 
 因为在 Docker `all-in-one` 场景下，Wasm 插件访问的是 Higress 服务来源生成的内部服务，而不是直接访问 Docker Compose 容器名。
+
+#### 添加ai提供者
+
+![alt text](image/image-8.png)
+
+以自定义 OpenAI 服务为例:
+![alt text](image/image-9.png)
 
 #### AI 路由配置注意事项
 
