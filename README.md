@@ -70,6 +70,25 @@ cd llm-tier-router
 bash build-and-push.sh
 ```
 
+### Docker 版 Redis 配置注意事项
+
+本项目使用的是 Docker 版 `higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/all-in-one`，Redis 接入方式和 K8s 部署不同，不能直接照搬 `redis.default.svc.cluster.local` 这一类配置。
+
+在 Higress Console 中为 Redis 创建服务来源时，请使用官方 AI 场景文档中的固定地址方案：
+
+- 类型：`固定地址`
+- 名称：`redis`
+- 服务端口：保持 `80`
+- 服务地址：填写 Redis 容器的 `IP:6379`，例如 `172.20.0.2:6379`
+- 服务协议：`HTTP`
+
+注意：
+
+- `DNS域名` 类型不适用于当前 Docker Compose 场景，Console 会对域名格式做额外校验，`redis`、`redis.higress-network` 这类 Docker 内部名称通常无法通过。
+- 这里的 `服务端口` 是 Higress 固定地址服务来源生成内部服务时使用的端口，不是 Redis 容器真实监听端口。
+- Redis 容器真实端口仍然通过“服务地址”中的 `:6379` 指定。
+- 创建成功后，插件配置中应使用 Higress 生成的内部服务名，例如 `redis.static`，而不是 Docker 容器名 `redis`。
+
 ### 停止服务
 
 ```bash
@@ -100,6 +119,12 @@ docker-compose logs higress-ai | grep wasm
 ```bash
 docker-compose exec redis redis-cli ping
 ```
+
+如果 Redis 容器正常，但插件仍返回 `{"error":"redis unavailable"}`，优先检查：
+
+1. Higress Console 中 Redis 服务来源是否按“固定地址 + HTTP + IP:6379”的方式创建。
+2. 插件配置中的 `redis_service` 是否已经改成 Higress 内部服务名（例如 `redis.static`）。
+3. 插件配置中的 `redis_port` 是否与内部服务端口一致，Docker `all-in-one` 场景下应使用 `80`。
 
 ### 请求无法通过网关
 

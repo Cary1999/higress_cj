@@ -136,8 +136,8 @@ redis-cli GET "higress:llm:token:$(date +%Y%m%d):user123"
 
 ```yaml
 internal_key: "higress-2026-newapi-secret"
-redis_port: 6379
-redis_service: "redis"
+redis_port: 80
+redis_service: "redis.static"
 tiers:
   - max_token: 1000
     target_model: "glm-4.5-air"
@@ -158,14 +158,52 @@ tiers:
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | internal_key | string | 是 | 内部鉴权密钥 |
-| redis_service | string | 是 | Redis 服务名称 |
-| redis_port | int | 否 | Redis 端口，默认 6379 |
+| redis_service | string | 是 | Redis 服务名称。Docker `all-in-one` 场景下应填写 Higress 服务来源生成的内部服务名，例如 `redis.static` |
+| redis_port | int | 否 | Redis 服务端口。Docker `all-in-one` 场景下应填写 `80`，而不是 Redis 容器实际监听的 `6379` |
 | redis_pass | string | 否 | Redis 密码 |
 | tiers | array | 是 | 分层配置 |
 | tiers[].max_token | int | 是 | Token 上限 |
 | tiers[].target_model | string | 否 | 目标模型 |
 | tiers[].target_host | string | 否 | 目标主机 |
 | tiers[].target_key | string | 否 | 目标 API Key |
+
+### Docker `all-in-one` 部署的 Redis 注意事项
+
+本插件在 Docker 版 `higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/all-in-one` 中使用 Redis 时，需要先在 Higress Console 中创建 Redis 服务来源，然后把插件配置指向 Higress 生成的内部服务名。
+
+推荐按官方 AI Token 管理文档中的方式配置 Redis 服务来源：
+
+- 类型：`固定地址`
+- 名称：`redis`
+- 服务端口：`80`
+- 服务地址：`<redis-ip>:6379`
+- 服务协议：`HTTP`
+
+例如 Redis 容器地址为 `172.20.0.2` 时，服务来源应填写为：
+
+```text
+类型: 固定地址
+名称: redis
+服务端口: 80
+服务地址: 172.20.0.2:6379
+服务协议: HTTP
+```
+
+创建成功后，插件中应配置：
+
+```yaml
+redis_service: "redis.static"
+redis_port: 80
+```
+
+不要直接写成下面这种 K8s/容器名思路的配置：
+
+```yaml
+redis_service: "redis"
+redis_port: 6379
+```
+
+因为在 Docker `all-in-one` 场景下，Wasm 插件访问的是 Higress 服务来源生成的内部服务，而不是直接访问 Docker Compose 容器名。
 
 ## 插件工作流程
 
@@ -250,3 +288,9 @@ tiers:
    ```bash
    docker exec higress-ai ping -c 1 redis
    ```
+
+   如果 Redis 容器正常，但请求仍返回 `{"error":"redis unavailable"}`，重点检查：
+
+   - Redis 服务来源是否按“固定地址 + HTTP + `<redis-ip>:6379`”创建
+   - 插件中的 `redis_service` 是否为 Higress 内部服务名，例如 `redis.static`
+   - 插件中的 `redis_port` 是否为 `80`
