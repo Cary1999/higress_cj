@@ -18,14 +18,12 @@ import (
 
 const (
 	pluginName         = "llm-tier-router"
-	internalAuthHead   = "Authorization"
 	userAPIKeyHeader   = "X-User-API-Key"
 	redisKeyCtx        = "redis_key"
 	tierCtx            = "selected_tier"
 	redisTTLSeconds    = 86400
 	redisCallTimeout   = 1000
 	requestBodyMaxSize = 8 * 1024 * 1024
-	internalAuthPrefix = "Bearer "
 )
 
 func main() {}
@@ -102,18 +100,11 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config Config) types.Action {
 	ctx.BufferRequestBody()
 	_ = proxywasm.RemoveHttpRequestHeader("content-length")
 
-	// 1. 内部鉴权：New API 必须携带固定内部密钥，外部直接访问会在这里被拒绝。
-	auth, _ := proxywasm.GetHttpRequestHeader(internalAuthHead)
-	if auth != internalAuthPrefix+config.InternalKey {
-		sendJSON(403, `{"error":"forbidden: invalid internal key"}`)
-		return types.HeaderStopAllIterationAndWatermark
-	}
-
 	// 2. 用户身份来自 New API 透传的 X-User-API-Key，真实 LLM 密钥不会暴露给调用方。
 	userKey, _ := proxywasm.GetHttpRequestHeader(userAPIKeyHeader)
 	userKey = strings.TrimSpace(userKey)
 	if userKey == "" {
-		sendJSON(401, `{"error":"missing X-User-API-Key"}`)
+		sendJSON(401, `{"error":"缺失 X-User-API-Key 参数"}`)
 		return types.HeaderStopAllIterationAndWatermark
 	}
 
@@ -125,7 +116,7 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config Config) types.Action {
 	if err := client.Get(redisKey, func(value resp.Value) {
 		if value.Error() != nil {
 			proxywasm.LogErrorf("redis GET failed, key=%s, err=%v", redisKey, value.Error())
-			sendJSON(503, `{"error":"redis unavailable"}`)
+			sendJSON(503, `{"error":"redis 服务不可用，请稍后重试"}`)
 			return
 		}
 
@@ -145,7 +136,7 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config Config) types.Action {
 		}
 	}); err != nil {
 		proxywasm.LogErrorf("dispatch redis GET failed, key=%s, err=%v", redisKey, err)
-		sendJSON(503, `{"error":"redis unavailable"}`)
+		sendJSON(503, `{"error":"redis 服务不可用，请稍后重试"}`)
 		return types.HeaderStopAllIterationAndBuffer
 	}
 
