@@ -50,10 +50,9 @@ type Config struct {
 }
 
 type Tier struct {
-	MaxToken    int    `json:"max_token"`
-	TargetModel string `json:"target_model"`
-	TargetHost  string `json:"target_host"`
-	TargetKey   string `json:"target_key"`
+	MaxToken       int    `json:"max_token"`
+	TargetProvider string `json:"target_provider"`
+	TargetModel    string `json:"target_model"`
 }
 
 func parseConfig(raw gjson.Result, config *Config) error {
@@ -77,6 +76,12 @@ func parseConfig(raw gjson.Result, config *Config) error {
 	for i, tier := range config.Tiers {
 		if tier.MaxToken <= 0 {
 			return fmt.Errorf("tiers[%d].max_token must be greater than 0", i)
+		}
+		if strings.TrimSpace(tier.TargetProvider) == "" {
+			return fmt.Errorf("tiers[%d].target_provider is required", i)
+		}
+		if strings.TrimSpace(tier.TargetModel) == "" {
+			return fmt.Errorf("tiers[%d].target_model is required", i)
 		}
 	}
 
@@ -229,14 +234,11 @@ func applyTierMetadata(tier Tier, usedTokens int) {
 		"X-Higress-Used-Token": strconv.Itoa(usedTokens),
 	}
 
+	if tier.TargetProvider != "" {
+		headers["X-Tier-Provider"] = tier.TargetProvider
+	}
 	if tier.TargetModel != "" {
 		headers["X-Higress-Target-Model"] = tier.TargetModel
-	}
-	if tier.TargetHost != "" {
-		headers["X-Higress-Target-Host"] = tier.TargetHost
-	}
-	if tier.TargetKey != "" {
-		headers["X-Higress-Target-Key"] = tier.TargetKey
 	}
 
 	for key, value := range headers {

@@ -140,17 +140,11 @@ redis_port: 80
 redis_service: "redis.static"
 tiers:
   - max_token: 1000
+    target_provider: "zhipu"
     target_model: "glm-4.5-air"
-    target_host: "https://open.bigmodel.cn"
-    target_key: "sk-your-api-key"
-  - max_token: 5000
-    target_model: "glm-4"
-    target_host: "https://api.xiaomimimo.com/v1"
-    target_key: "sk-your-api-key"
   - max_token: 9999999
+    target_provider: "xiaomi"
     target_model: "mimo-v2.5-pro"
-    target_host: "https://api.xiaomimimo.com/v1"
-    target_key: "sk-your-api-key"
 ```
 
 ### 字段说明
@@ -163,9 +157,8 @@ tiers:
 | redis_pass | string | 否 | Redis 密码 |
 | tiers | array | 是 | 分层配置 |
 | tiers[].max_token | int | 是 | Token 上限 |
-| tiers[].target_model | string | 否 | 目标模型 |
-| tiers[].target_host | string | 否 | 目标主机 |
-| tiers[].target_key | string | 否 | 目标 API Key |
+| tiers[].target_provider | string | 是 | 目标 provider 标识。建议使用稳定值，如 `zhipu`、`xiaomi` |
+| tiers[].target_model | string | 是 | 目标模型 |
 
 ### Docker `all-in-one` 部署的 Redis 注意事项
 
@@ -205,6 +198,30 @@ redis_port: 6379
 
 因为在 Docker `all-in-one` 场景下，Wasm 插件访问的是 Higress 服务来源生成的内部服务，而不是直接访问 Docker Compose 容器名。
 
+### Higress AI 路由配置建议
+
+客户端固定调用 `/v1/chat/completions`，无需自己传 `model`。插件会根据 tier 自动补齐目标模型，并通过 Header 告诉 Higress 该命中哪个 provider。
+
+推荐在 Higress Console 中拆成两条 AI 路由，而不是在一条路由中配置多个 provider 权重分流：
+
+1. 路由 A
+   - Path：`/v1`
+   - Header 匹配：`X-Tier-Provider = zhipu`
+   - 目标 AI 服务：仅 `智普`
+   - 请求比例：`100`
+2. 路由 B
+   - Path：`/v1`
+   - Header 匹配：`X-Tier-Provider = xiaomi`
+   - 目标 AI 服务：仅 `小米`
+   - 请求比例：`100`
+
+不要再使用如下配置：
+
+- 一条 AI 路由下同时挂 `智普`、`小米`
+- 使用 `90/10`、`50/50` 等权重做分流
+
+因为这会导致插件虽然已经选中了 tier 并改写了模型，但实际 provider 仍然随机命中。
+
 ## 插件工作流程
 
 ```
@@ -234,12 +251,12 @@ redis_port: 6379
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  5. 重写请求：替换请求体中的 model 字段                         │
+│  5. 重写请求：补齐/覆盖请求体中的 model 字段                    │
 └─────────────────────────────────────────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  6. 转发请求：添加 X-Higress-* Header 后转发                   │
+│  6. 转发请求：添加 X-Tier-Provider 等 Header 后转发            │
 └─────────────────────────────────────────────────────────────────┘
                                │
                                ▼
@@ -254,11 +271,10 @@ redis_port: 6379
 
 | Header | 说明 |
 |--------|------|
+| X-Tier-Provider | 目标 provider 标识，用于让 Higress 命中对应 AI 路由 |
 | X-Higress-Tier-Limit | 当前 Tier 的 Token 上限 |
 | X-Higress-Used-Token | 用户当日已使用的 Token 数 |
 | X-Higress-Target-Model | 目标模型名称 |
-| X-Higress-Target-Host | 目标主机地址 |
-| X-Higress-Target-Key | 目标 API Key |
 
 ## 故障排查
 
@@ -282,7 +298,15 @@ redis_port: 6379
    - `Authorization: Bearer <internal_key>`
    - `X-User-API-Key: <user_key>`
 
-3. **Redis 连接失败**
+3. **请求命中了错误的 AI 服务提供者**
+
+   重点检查：
+
+   - 插件配置中的 `tiers[].target_provider` 是否与 Higress AI 路由中的 Header 匹配值一致
+   - Higress 是否拆成了两条 AI 路由，并使用 `X-Tier-Provider` 做 Header 匹配
+   - 每条 AI 路由下是否只保留一个 provider，且比例为 `100`
+
+4. **Redis 连接失败**
 
    确保 Redis 服务正常运行且可被 Higress 访问：
    ```bash

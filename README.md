@@ -102,9 +102,36 @@ Client → sub2api → Higress(自定义插件) → LLM Service
 ```
 
 1. **请求接收**：Higress 网关接收来自 sub2api 的请求
-2. **插件处理**：自定义 WASM 插件处理请求逻辑
-3. **流量分发**：根据业务规则将请求分发到不同的 LLM 服务
+2. **插件处理**：自定义 WASM 插件根据 Redis 中的累计 Token 选择目标 provider 和 model
+3. **流量分发**：Higress 根据插件写入的路由 Header 将请求转发到对应 AI 服务提供者
 4. **响应返回**：将 LLM 服务的响应返回给客户端
+
+### AI 路由配置注意事项
+
+客户端请求固定走 `/v1/chat/completions`。当前方案由插件在网关内补齐目标模型，并写入 provider 路由 Header：
+
+以下拿小米与智普举例：
+- `X-Tier-Provider: zhipu`
+- `X-Tier-Provider: xiaomi`
+
+因此，Higress Console 中不要再使用“一条 AI 路由下挂多个 provider 按权重分流”的配置方式，而应拆成两条 AI 路由：
+
+1. 路由 A
+   - Path：`/v1`
+   - Header 匹配：`X-Tier-Provider = zhipu`
+   - 目标 AI 服务：仅 `智普`
+   - 请求比例：`100`
+2. 路由 B
+   - Path：`/v1`
+   - Header 匹配：`X-Tier-Provider = xiaomi`
+   - 目标 AI 服务：仅 `小米`
+   - 请求比例：`100`
+
+注意：
+
+- 每条 AI 路由只绑定一个 provider，避免继续发生 90/10 这类随机分流。
+- provider 的地址、密钥、鉴权方式都继续在 Higress 的“AI 服务提供者”中维护，不再写入插件配置。
+- 插件会自动把请求体补成目标模型，因此客户端请求无需携带 `model` 字段。
 
 ## 故障排查
 
@@ -131,6 +158,12 @@ docker-compose exec redis redis-cli ping
 ```bash
 docker-compose logs higress-ai
 ```
+
+如果请求命中了错误的 AI 服务提供者，优先检查：
+
+1. 是否仍然保留了“一条 AI 路由 + 多个 provider + 权重”的配置。
+2. 是否已经拆成两条 AI 路由，并使用 `X-Tier-Provider` 作为 Header 匹配条件。
+3. 两条 AI 路由的目标 AI 服务是否分别只保留一个 provider，且比例为 `100`。
 
 ### 镜像推送失败
 
