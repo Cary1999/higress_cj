@@ -9,7 +9,7 @@ services:
     networks:
       - higress-network
     volumes:
-      - registry-data:/var/lib/registry
+      - ./data/registry:/var/lib/registry
     restart: always
 
   redis:
@@ -20,7 +20,7 @@ services:
     networks:
       - higress-network
     volumes:
-      - redis-data:/data
+      - ./data/redis:/data
     restart: always
 
   higress-ai:
@@ -34,12 +34,11 @@ services:
     depends_on:
       - redis
       - registry
+    volumes:
+      - ./data/higress/logs:/var/log/higress
+      - ./data/higress/data:/data
     restart: always
 
 networks:
   higress-network:
     name: higress-network
-
-volumes:
-  registry-data:
-  redis-data:

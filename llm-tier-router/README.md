@@ -59,7 +59,10 @@ docker push localhost:5000/llm-tier-router:1.0.0
 ### 一键构建并推送
 
 ```bash
-bash build-and-push.sh
+GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o llm-tier-router.wasm main.go
+docker build -t llm-tier-router:v1.0.0 .
+docker tag llm-tier-router:v1.0.0 localhost:5000/llm-tier-router:1.0.0
+docker push localhost:5000/llm-tier-router:1.0.0
 ```
 
 ### 镜像地址
