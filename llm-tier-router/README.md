@@ -108,30 +108,37 @@ info    wasm    fetching image with plain text from host.docker.internal:5000/ll
 
 配置示例:
 ```yaml
-internal_key: "higress-2026-newapi-secret"
 redis_port: 80
 redis_service: "redis.static"
-tiers:
-  - max_token: 1000
-    target_provider: "zhipu"
-    target_model: "glm-4.5-air"
-  - max_token: 9999999
-    target_provider: "xiaomi"
-    target_model: "mimo-v2.5-pro"
+redis_pass: ""
+model_tiers:
+  glm-4.5-air:
+    - max_token: 1000
+      target_provider: "zhipu"
+      target_model: "glm-4.5-air"
+    - max_token: 5000
+      target_provider: "xiaomi"
+      target_model: "mimo-v2.5-pro"
+  gpt-3.5-turbo:
+    - max_token: 2000
+      target_provider: "openai"
+      target_model: "gpt-3.5-turbo"
+    - max_token: 8000
+      target_provider: "azure"
+      target_model: "gpt-3.5-turbo-16k"
 ```
 
 #### 字段说明
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| internal_key | string | 是 | 内部鉴权密钥 |
 | redis_service | string | 是 | Redis 服务名称。Docker `all-in-one` 场景下应填写 Higress 服务来源生成的内部服务名，例如 `redis.static` |
 | redis_port | int | 否 | Redis 服务端口。Docker `all-in-one` 场景下应填写 `80`，而不是 Redis 容器实际监听的 `6379` |
 | redis_pass | string | 否 | Redis 密码 |
-| tiers | array | 是 | 分层配置 |
-| tiers[].max_token | int | 是 | Token 上限 |
-| tiers[].target_provider | string | 是 | 目标 provider 标识。建议使用稳定值，如 `zhipu`、`xiaomi` |
-| tiers[].target_model | string | 是 | 目标模型 |
+| model_tiers | object | 是 | 模型分层配置，key 为模型名称，value 为该模型的 tier 数组 |
+| model_tiers[model][].max_token | int | 是 | Token 上限 |
+| model_tiers[model][].target_provider | string | 是 | 目标 provider 标识。建议使用稳定值，如 `zhipu`、`xiaomi`、`openai` |
+| model_tiers[model][].target_model | string | 是 | 目标模型名称 |
 
 #### Docker `all-in-one` 部署的 Redis 注意事项
 
@@ -216,7 +223,7 @@ redis_port: 6379
 
 ### 3. 测试请求
 
-#### 测试1：缺少 Authorization Header（预期返回 403）
+#### 测试1：缺少 X-Model Header（预期返回 400）
 
 ```bash
 curl -v http://localhost:8081/v1/chat/completions \
@@ -229,19 +236,29 @@ curl -v http://localhost:8081/v1/chat/completions \
 
 ```bash
 curl -v http://localhost:8081/v1/chat/completions \
-  -H "Authorization: Bearer your-internal-secret" \
+  -H "X-Model: glm-4.5-air" \
   -H "Content-Type: application/json" \
-  -d '{"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hello"}]}'
+  -d '{"model": "glm-4.5-air", "messages": [{"role": "user", "content": "hello"}]}'
 ```
 
-#### 测试3：正常请求（预期成功转发）
+#### 测试3：模型未配置（预期返回 400）
 
 ```bash
 curl -v http://localhost:8081/v1/chat/completions \
-  -H "Authorization: Bearer your-internal-secret" \
   -H "X-User-API-Key: user123" \
+  -H "X-Model: unknown-model" \
   -H "Content-Type: application/json" \
-  -d '{"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hello"}]}'
+  -d '{"model": "unknown-model", "messages": [{"role": "user", "content": "hello"}]}'
+```
+
+#### 测试4：正常请求（预期成功转发）
+
+```bash
+curl -v http://localhost:8081/v1/chat/completions \
+  -H "X-User-API-Key: user123" \
+  -H "X-Model: glm-4.5-air" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "glm-4.5-air", "messages": [{"role": "user", "content": "hello"}]}'
 ```
 
 ### 4. 验证 Redis 统计
@@ -261,12 +278,12 @@ redis-cli GET "higress:llm:token:$(date +%Y%m%d):user123"
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  1. 内部鉴权：验证 Authorization: Bearer <internal_key>       │
+│  1. 用户识别：获取 X-User-API-Key                              │
 └─────────────────────────────────────────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  2. 用户识别：获取 X-User-API-Key                              │
+│  2. 获取模型：从 X-Model 请求头获取目标模型名                   │
 └─────────────────────────────────────────────────────────────────┘
                                │
                                ▼
@@ -276,22 +293,37 @@ redis-cli GET "higress:llm:token:$(date +%Y%m%d):user123"
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  4. 选择 Tier：根据累计 Token 选择对应的服务层                  │
+│  4. 选择 Tier：根据模型名匹配配置，根据累计 Token 选择服务层      │
 └─────────────────────────────────────────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  5. 重写请求：补齐/覆盖请求体中的 model 字段                    │
+│  5. 设置路由 Header：添加 X-Tier-Provider 供 Higress 路由匹配   │
 └─────────────────────────────────────────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  6. 转发请求：添加 X-Tier-Provider 等 Header 后转发            │
+│  6. Higress 路由匹配：基于 X-Tier-Provider 转发到目标 Provider │
 └─────────────────────────────────────────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  7. 响应统计：从响应提取 total_tokens 并累加到 Redis            │
+│  7. 重写请求体：将请求体中的 model 字段替换为目标模型            │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  8. 移除内部 Header：移除 X-Model/X-User-API-Key/X-Tier-Provider│
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  9. 转发请求：发送到目标 AI 服务提供者                          │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 10. 响应统计：从响应提取 total_tokens 并累加到 Redis           │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -299,12 +331,22 @@ redis-cli GET "higress:llm:token:$(date +%Y%m%d):user123"
 
 插件会在请求中添加以下 Header：
 
+| Header | 说明 | 生命周期 |
+|--------|------|----------|
+| X-Tier-Provider | 目标 provider 标识，用于让 Higress 命中对应 AI 路由 | 路由匹配后移除 |
+| X-Higress-Tier-Limit | 当前 Tier 的 Token 上限 | 保留转发 |
+| X-Higress-Used-Token | 用户当日已使用的 Token 数 | 保留转发 |
+| X-Higress-Target-Model | 目标模型名称 | 保留转发 |
+
+### 移除的 Header
+
+插件会在路由匹配完成后移除以下内部 Header，不会转发给后端服务：
+
 | Header | 说明 |
 |--------|------|
-| X-Tier-Provider | 目标 provider 标识，用于让 Higress 命中对应 AI 路由 |
-| X-Higress-Tier-Limit | 当前 Tier 的 Token 上限 |
-| X-Higress-Used-Token | 用户当日已使用的 Token 数 |
-| X-Higress-Target-Model | 目标模型名称 |
+| X-Model | 客户端请求时携带的模型名 |
+| X-User-API-Key | 用户标识 |
+| X-Tier-Provider | 路由匹配完成后移除 |
 
 ## 故障排查
 
@@ -325,8 +367,8 @@ redis-cli GET "higress:llm:token:$(date +%Y%m%d):user123"
 2. **请求被拒绝**
 
    检查是否携带了正确的 Header：
-   - `Authorization: Bearer <internal_key>`
-   - `X-User-API-Key: <user_key>`
+   - `X-User-API-Key: <user_key>` - 用户标识
+   - `X-Model: <model_name>` - 目标模型名（如 `glm-4.5-air`）
 
 3. **请求命中了错误的 AI 服务提供者**
 

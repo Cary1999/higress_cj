@@ -19,6 +19,7 @@ import (
 const (
 	pluginName         = "llm-tier-router"
 	userAPIKeyHeader   = "X-User-API-Key"
+	modelHeader        = "X-Model"
 	redisKeyCtx        = "redis_key"
 	tierCtx            = "selected_tier"
 	redisTTLSeconds    = 86400
@@ -42,7 +43,7 @@ type Config struct {
 	RedisService string              `json:"redis_service"`
 	RedisPort    int                 `json:"redis_port"`
 	RedisPass    string              `json:"redis_pass"`
-	Tiers        []Tier              `json:"tiers"`
+	ModelTiers   map[string][]Tier   `json:"model_tiers"`
 	RedisClient  wrapper.RedisClient `json:"-"`
 }
 
@@ -63,25 +64,28 @@ func parseConfig(raw gjson.Result, config *Config) error {
 	if config.RedisPort <= 0 {
 		config.RedisPort = 6379
 	}
-	if len(config.Tiers) == 0 {
-		return errors.New("tiers is required")
+	if len(config.ModelTiers) == 0 {
+		return errors.New("model_tiers is required")
 	}
 
-	for i, tier := range config.Tiers {
-		if tier.MaxToken <= 0 {
-			return fmt.Errorf("tiers[%d].max_token must be greater than 0", i)
+	for model, tiers := range config.ModelTiers {
+		for i, tier := range tiers {
+			if tier.MaxToken <= 0 {
+				return fmt.Errorf("model[%s].tiers[%d].max_token must be greater than 0", model, i)
+			}
+			if strings.TrimSpace(tier.TargetProvider) == "" {
+				return fmt.Errorf("model[%s].tiers[%d].target_provider is required", model, i)
+			}
+			if strings.TrimSpace(tier.TargetModel) == "" {
+				return fmt.Errorf("model[%s].tiers[%d].target_model is required", model, i)
+			}
 		}
-		if strings.TrimSpace(tier.TargetProvider) == "" {
-			return fmt.Errorf("tiers[%d].target_provider is required", i)
-		}
-		if strings.TrimSpace(tier.TargetModel) == "" {
-			return fmt.Errorf("tiers[%d].target_model is required", i)
-		}
-	}
 
-	sort.Slice(config.Tiers, func(i, j int) bool {
-		return config.Tiers[i].MaxToken < config.Tiers[j].MaxToken
-	})
+		sort.Slice(tiers, func(i, j int) bool {
+			return tiers[i].MaxToken < tiers[j].MaxToken
+		})
+		config.ModelTiers[model] = tiers
+	}
 
 	client := newRedisClient(*config)
 	if err := client.Init("", config.RedisPass, redisCallTimeout); err != nil {
@@ -96,7 +100,7 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config Config) types.Action {
 	ctx.BufferRequestBody()
 	_ = proxywasm.RemoveHttpRequestHeader("content-length")
 
-	// 2. 用户身份来自 New API 透传的 X-User-API-Key，真实 LLM 密钥不会暴露给调用方。
+	// 用户身份来自 New API 透传的 X-User-API-Key，真实 LLM 密钥不会暴露给调用方。
 	userKey, _ := proxywasm.GetHttpRequestHeader(userAPIKeyHeader)
 	userKey = strings.TrimSpace(userKey)
 	if userKey == "" {
@@ -104,7 +108,7 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config Config) types.Action {
 		return types.HeaderStopAllIterationAndWatermark
 	}
 
-	// 3. 按用户 Key 和日期生成 Redis 日累计 Key；日期进入 Key，TTL 负责自动清理。
+	// 按用户 Key 和日期生成 Redis 日累计 Key；日期进入 Key，TTL 负责自动清理。
 	redisKey := dailyRedisKey(userKey)
 	ctx.SetContext(redisKeyCtx, redisKey)
 
@@ -121,9 +125,21 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config Config) types.Action {
 			usedTokens = value.Integer()
 		}
 
-		// 4. 根据当日累计 Token 动态选择阶梯。方案 B 中插件只负责选择 tier，
-		// 真实供应商与 Key 池交给 Higress ai-proxy / AI 路由能力处理。
-		tier := selectTier(config.Tiers, usedTokens)
+		// 从 X-Model 请求头获取模型名
+		model, err := extractModelFromRequest()
+		if err != nil {
+			proxywasm.LogErrorf("extract model failed: %v", err)
+			sendJSON(400, `{"error":"缺少 X-Model 请求头"}`)
+			return
+		}
+		tiers, ok := config.ModelTiers[model]
+		if !ok {
+			proxywasm.LogErrorf("model %s not found in model_tiers config", model)
+			sendJSON(400, `{"error":"不支持的模型: `+model+`"}`)
+			return
+		}
+
+		tier := selectTier(tiers, usedTokens)
 		ctx.SetContext(tierCtx, tier)
 		applyTierMetadata(tier, usedTokens)
 
@@ -137,6 +153,18 @@ func onHttpRequestHeaders(ctx wrapper.HttpContext, config Config) types.Action {
 	}
 
 	return types.HeaderStopAllIterationAndBuffer
+}
+
+func extractModelFromRequest() (string, error) {
+	model, err := proxywasm.GetHttpRequestHeader(modelHeader)
+	if err != nil {
+		return "", fmt.Errorf("获取 %s 请求头失败: %w", modelHeader, err)
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "", fmt.Errorf("缺少 %s 请求头", modelHeader)
+	}
+	return model, nil
 }
 
 func onHttpRequestBody(ctx wrapper.HttpContext, config Config, body []byte) types.Action {
@@ -154,7 +182,17 @@ func onHttpRequestBody(ctx wrapper.HttpContext, config Config, body []byte) type
 		proxywasm.LogErrorf("replace request body failed: %v", err)
 		return types.DataContinue
 	}
+
+	// 移除内部头，路由匹配已完成
+	removeInternalHeaders()
+
 	return types.DataContinue
+}
+
+func removeInternalHeaders() {
+	_ = proxywasm.RemoveHttpRequestHeader(userAPIKeyHeader)  // X-User-API-Key
+	_ = proxywasm.RemoveHttpRequestHeader(modelHeader)       // X-Model
+	_ = proxywasm.RemoveHttpRequestHeader("X-Tier-Provider") // X-Tier-Provider
 }
 
 func onHttpResponseBody(ctx wrapper.HttpContext, config Config, body []byte) types.Action {
